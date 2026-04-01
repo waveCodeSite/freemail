@@ -52,6 +52,16 @@ export default {
       return routeResponse;
     }
 
+    // 分享页面：/share/<token> 直接返回 share.html（在 assetManager 之前拦截）
+    const reqUrl = new URL(request.url);
+    if (reqUrl.pathname.startsWith('/share/') && reqUrl.pathname.split('/').length === 3) {
+      const assetManager = createAssetManager();
+      if (env.ASSETS && env.ASSETS.fetch) {
+        const shareReq = new Request(new URL('/html/share.html', reqUrl).toString(), request);
+        return env.ASSETS.fetch(shareReq);
+      }
+    }
+
     // 使用资源管理器处理静态资源请求
     const assetManager = createAssetManager();
     return await assetManager.handleAssetRequest(request, env, MAIL_DOMAINS);
