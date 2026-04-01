@@ -5,6 +5,7 @@
 
 import { errorResponse } from './helpers.js';
 import { parseEmailBody } from '../email/parser.js';
+import { ensureMailboxesShareFields } from '../db/index.js';
 
 /**
  * 通过 share_token 查询邮箱，验证 token 有效且未过期
@@ -14,20 +15,16 @@ import { parseEmailBody } from '../email/parser.js';
  */
 async function resolveShareToken(db, token) {
   if (!token || typeof token !== 'string' || token.length < 8) return null;
-  try {
-    const row = await db.prepare(
-      'SELECT id, address, share_token, share_expires_at FROM mailboxes WHERE share_token = ? LIMIT 1'
-    ).bind(token).first();
-    if (!row) return null;
-    // 检查过期
-    if (row.share_expires_at) {
-      const expiresAt = new Date(row.share_expires_at).getTime();
-      if (expiresAt <= Date.now()) return null;
-    }
-    return row;
-  } catch (_) {
-    return null;
+  const row = await db.prepare(
+    'SELECT id, address, share_token, share_expires_at FROM mailboxes WHERE share_token = ? LIMIT 1'
+  ).bind(token).first();
+  if (!row) return null;
+  // 检查过期
+  if (row.share_expires_at) {
+    const expiresAt = new Date(row.share_expires_at).getTime();
+    if (expiresAt <= Date.now()) return null;
   }
+  return row;
 }
 
 /** 无效/过期 token 的统一错误响应 */
@@ -68,11 +65,23 @@ export async function handleShareApi(request, db, url, path, options) {
   const sharePath = parseShareApiPath(path);
   if (!sharePath) return null;
 
+  try {
+    await ensureMailboxesShareFields(db);
+  } catch (_) {
+    return errorResponse('分享链接解析失败', 500);
+  }
+
   const { token, action, extra } = sharePath;
 
   // 获取分享邮箱信息
   if (action === 'info') {
-    const mailbox = await resolveShareToken(db, token);
+    let mailbox;
+    try {
+      mailbox = await resolveShareToken(db, token);
+    } catch (e) {
+      console.error('分享链接解析失败:', e);
+      return errorResponse('分享链接解析失败', 500);
+    }
     if (!mailbox) return INVALID_SHARE();
     return Response.json({
       address: mailbox.address,
@@ -82,7 +91,13 @@ export async function handleShareApi(request, db, url, path, options) {
 
   // 获取邮件列表
   if (action === 'emails') {
-    const mailbox = await resolveShareToken(db, token);
+    let mailbox;
+    try {
+      mailbox = await resolveShareToken(db, token);
+    } catch (e) {
+      console.error('分享链接解析失败:', e);
+      return errorResponse('分享链接解析失败', 500);
+    }
     if (!mailbox) return INVALID_SHARE();
 
     try {
@@ -119,7 +134,13 @@ export async function handleShareApi(request, db, url, path, options) {
   // 获取单封邮件详情
   if (action === 'email' && extra) {
     const emailId = extra;
-    const mailbox = await resolveShareToken(db, token);
+    let mailbox;
+    try {
+      mailbox = await resolveShareToken(db, token);
+    } catch (e) {
+      console.error('分享链接解析失败:', e);
+      return errorResponse('分享链接解析失败', 500);
+    }
     if (!mailbox) return INVALID_SHARE();
 
     try {

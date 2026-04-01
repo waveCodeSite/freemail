@@ -90,6 +90,33 @@ async function createIndexes(db) {
 }
 
 /**
+ * 确保 mailboxes 表的分享字段存在
+ * @param {object} db - 数据库连接对象
+ * @returns {Promise<void>}
+ */
+export async function ensureMailboxesShareFields(db) {
+  try {
+    const columns = await db.prepare("PRAGMA table_info(mailboxes)").all();
+    const columnNames = (columns.results || []).map(c => c.name);
+
+    if (!columnNames.includes('share_token')) {
+      await db.exec("ALTER TABLE mailboxes ADD COLUMN share_token TEXT DEFAULT NULL;");
+      console.log('已添加 mailboxes.share_token 字段');
+    }
+
+    if (!columnNames.includes('share_expires_at')) {
+      await db.exec("ALTER TABLE mailboxes ADD COLUMN share_expires_at TEXT DEFAULT NULL;");
+      console.log('已添加 mailboxes.share_expires_at 字段');
+    }
+
+    await db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_mailboxes_share_token ON mailboxes(share_token);");
+  } catch (error) {
+    console.error('mailboxes 分享字段修复失败:', error);
+    throw error;
+  }
+}
+
+/**
  * 迁移 mailboxes 表字段（向后兼容）
  * 检查并添加缺失的字段：forward_to, is_favorite, share_token, share_expires_at
  * @param {object} db - 数据库连接对象
@@ -112,18 +139,7 @@ async function migrateMailboxesFields(db) {
       await db.exec("CREATE INDEX IF NOT EXISTS idx_mailboxes_is_favorite ON mailboxes(is_favorite DESC);");
       console.log('已添加 mailboxes.is_favorite 字段');
     }
-
-    if (!columnNames.includes('share_token')) {
-      await db.exec("ALTER TABLE mailboxes ADD COLUMN share_token TEXT DEFAULT NULL;");
-      console.log('已添加 mailboxes.share_token 字段');
-    }
-
-    if (!columnNames.includes('share_expires_at')) {
-      await db.exec("ALTER TABLE mailboxes ADD COLUMN share_expires_at TEXT DEFAULT NULL;");
-      console.log('已添加 mailboxes.share_expires_at 字段');
-    }
-
-    await db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_mailboxes_share_token ON mailboxes(share_token);");
+    await ensureMailboxesShareFields(db);
   } catch (error) {
     console.error('mailboxes 字段迁移失败:', error);
     // 不抛出异常，允许继续运行

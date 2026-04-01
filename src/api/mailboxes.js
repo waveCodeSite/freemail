@@ -23,7 +23,8 @@ import {
   getOrCreateMailboxId,
   toggleMailboxPin,
   getTotalMailboxCount,
-  assignMailboxToUser
+  assignMailboxToUser,
+  ensureMailboxesShareFields
 } from '../db/index.js';
 import { handleMailboxAdminApi } from './mailboxAdmin.js';
 
@@ -117,6 +118,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
   if (path === '/api/mailbox/share' && request.method === 'POST') {
     if (isMock) return errorResponse('演示模式不可操作', 403);
     try {
+      await ensureMailboxesShareFields(db);
       const body = await request.json();
       const address = String(body.address || '').trim().toLowerCase();
       if (!address) return errorResponse('缺少邮箱地址', 400);
@@ -167,6 +169,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
     }
 
     try {
+      await ensureMailboxesShareFields(db);
       const row = await db.prepare(
         'SELECT share_token, share_expires_at FROM mailboxes WHERE address = ? LIMIT 1'
       ).bind(address.toLowerCase()).first();
@@ -194,6 +197,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
     if (!address) return errorResponse('缺少邮箱地址', 400);
 
     try {
+      await ensureMailboxesShareFields(db);
       await db.prepare(
         'UPDATE mailboxes SET share_token = NULL, share_expires_at = NULL WHERE address = ?'
       ).bind(address.toLowerCase()).run();
