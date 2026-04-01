@@ -236,6 +236,18 @@ async function delegateApiRequest(context) {
   const RESEND_API_KEY = env.RESEND_API_KEY || env.RESEND_TOKEN || env.RESEND || '';
   const ADMIN_NAME = String(env.ADMIN_NAME || 'admin').trim().toLowerCase();
 
+  // 分享 API 免认证，直接委托处理
+  const url = new URL(request.url);
+  if (url.pathname.startsWith('/api/share/')) {
+    return handleApiRequest(request, DB, MAIL_DOMAINS, {
+      mockOnly: false,
+      resendApiKey: RESEND_API_KEY,
+      adminName: ADMIN_NAME,
+      r2: env.MAIL_EML,
+      authPayload: authPayload || {}
+    });
+  }
+
   // 访客只允许读取模拟数据
   if ((authPayload.role || 'admin') === 'guest') {
     return handleApiRequest(request, DB, MAIL_DOMAINS, {
