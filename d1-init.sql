@@ -19,13 +19,16 @@ CREATE TABLE IF NOT EXISTS mailboxes (
   expires_at      TEXT,
   is_pinned       INTEGER DEFAULT 0,
   forward_to      TEXT    DEFAULT NULL,
-  is_favorite     INTEGER DEFAULT 0
+  is_favorite     INTEGER DEFAULT 0,
+  share_token     TEXT    DEFAULT NULL,
+  share_expires_at TEXT   DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_mailboxes_address          ON mailboxes(address);
 CREATE INDEX IF NOT EXISTS idx_mailboxes_is_pinned        ON mailboxes(is_pinned DESC);
 CREATE INDEX IF NOT EXISTS idx_mailboxes_is_favorite      ON mailboxes(is_favorite DESC);
 CREATE INDEX IF NOT EXISTS idx_mailboxes_address_created  ON mailboxes(address, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mailboxes_share_token ON mailboxes(share_token);
 
 -- ────────────────────────────────────────
 -- 邮件消息表

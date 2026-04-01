@@ -20,6 +20,7 @@ export class AssetManager {
       '/mailboxes.html',
       '/mailbox.html',
       '/html/mailbox.html',
+      '/html/share.html',
       '/templates/app.html',
       '/templates/footer.html',
       '/templates/loading.html',
@@ -50,7 +51,9 @@ export class AssetManager {
       '/public/',
       '/js/',
       '/css/',
-      '/html/'
+      '/html/',
+      '/share/',
+      '/icons/'
     ];
 
     this.protectedPaths = new Set([
@@ -123,6 +126,12 @@ export class AssetManager {
     }
     if (pathname === '/mailboxes.html' || pathname === '/html/mailboxes.html') {
       return await this.handleAllMailboxesPage(mappedRequest, env, JWT_TOKEN);
+    }
+
+    // 分享页面：/share/<token> 返回 share.html（token 由前端 JS 解析）
+    if (pathname.startsWith('/share/') && pathname.split('/').length === 3) {
+      const shareReq = new Request(new URL('/html/share.html', url).toString(), request);
+      return env.ASSETS.fetch(shareReq);
     }
 
     return env.ASSETS.fetch(mappedRequest);

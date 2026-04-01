@@ -328,6 +328,146 @@ export async function logout(api) {
   window.location.replace('/html/login.html');
 }
 
+/**
+ * 分享邮箱 - 打开分享对话框
+ * @param {Function} api - API 函数
+ * @param {Function} showToast - 提示函数
+ */
+export async function openShareDialog(api, showToast) {
+  const mailbox = getCurrentMailbox();
+  if (!mailbox) {
+    showToast('请先生成或选择一个邮箱', 'warn');
+    return;
+  }
+
+  const modal = document.getElementById('share-modal');
+  const linkContainer = document.getElementById('share-link-container');
+  const generateSection = document.getElementById('share-generate-section');
+  const linkInput = document.getElementById('share-link-input');
+  const expiresInfo = document.getElementById('share-expires-info');
+
+  if (!modal) return;
+
+  // 查询当前分享状态
+  try {
+    const r = await api(`/api/mailbox/share?address=${encodeURIComponent(mailbox)}`);
+    if (r.ok) {
+      const data = await r.json();
+      if (data.shared && !data.expired) {
+        // 已有有效分享链接
+        const shareUrl = `${location.origin}${data.share_url}`;
+        if (linkInput) linkInput.value = shareUrl;
+        if (expiresInfo) {
+          expiresInfo.textContent = data.expires_at
+            ? `过期时间：${new Date(data.expires_at).toLocaleString('zh-CN')}`
+            : '永不过期';
+        }
+        if (linkContainer) linkContainer.style.display = '';
+        if (generateSection) generateSection.style.display = 'none';
+      } else {
+        // 无分享或已过期
+        if (linkContainer) linkContainer.style.display = 'none';
+        if (generateSection) generateSection.style.display = '';
+      }
+    }
+  } catch (_) {
+    if (linkContainer) linkContainer.style.display = 'none';
+    if (generateSection) generateSection.style.display = '';
+  }
+
+  modal.classList.add('show');
+}
+
+/**
+ * 生成分享链接
+ * @param {Function} api - API 函数
+ * @param {Function} showToast - 提示函数
+ */
+export async function generateShareLink(api, showToast) {
+  const mailbox = getCurrentMailbox();
+  if (!mailbox) return;
+
+  const expiresSelect = document.getElementById('share-expires-select');
+  const linkContainer = document.getElementById('share-link-container');
+  const generateSection = document.getElementById('share-generate-section');
+  const linkInput = document.getElementById('share-link-input');
+  const expiresInfo = document.getElementById('share-expires-info');
+  const generateBtn = document.getElementById('share-generate-btn');
+
+  const expires = expiresSelect?.value || '24h';
+
+  try {
+    if (generateBtn) { generateBtn.disabled = true; generateBtn.textContent = '生成中…'; }
+
+    const r = await api('/api/mailbox/share', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: mailbox, expires })
+    });
+
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+
+    const shareUrl = `${location.origin}${data.share_url}`;
+    if (linkInput) linkInput.value = shareUrl;
+    if (expiresInfo) {
+      expiresInfo.textContent = data.expires_at
+        ? `过期时间：${new Date(data.expires_at).toLocaleString('zh-CN')}`
+        : '永不过期';
+    }
+    if (linkContainer) linkContainer.style.display = '';
+    if (generateSection) generateSection.style.display = 'none';
+
+    showToast('分享链接已生成', 'success');
+  } catch (e) {
+    showToast(e.message || '生成分享链接失败', 'error');
+  } finally {
+    if (generateBtn) { generateBtn.disabled = false; generateBtn.textContent = '生成链接'; }
+  }
+}
+
+/**
+ * 复制分享链接
+ * @param {Function} showToast - 提示函数
+ */
+export async function copyShareLink(showToast) {
+  const linkInput = document.getElementById('share-link-input');
+  if (!linkInput?.value) return;
+  try {
+    await navigator.clipboard.writeText(linkInput.value);
+    showToast('分享链接已复制', 'success');
+  } catch (_) {
+    showToast('复制失败', 'error');
+  }
+}
+
+/**
+ * 撤销分享链接
+ * @param {Function} api - API 函数
+ * @param {Function} showToast - 提示函数
+ * @param {Function} showConfirm - 确认函数
+ */
+export async function revokeShareLink(api, showToast, showConfirm) {
+  const mailbox = getCurrentMailbox();
+  if (!mailbox) return;
+
+  const confirmed = await showConfirm('撤销后，已分享的链接将立即失效，确定撤销？');
+  if (!confirmed) return;
+
+  try {
+    const r = await api(`/api/mailbox/share?address=${encodeURIComponent(mailbox)}`, { method: 'DELETE' });
+    if (r.ok) {
+      const linkContainer = document.getElementById('share-link-container');
+      const generateSection = document.getElementById('share-generate-section');
+      if (linkContainer) linkContainer.style.display = 'none';
+      if (generateSection) generateSection.style.display = '';
+      showToast('分享链接已撤销', 'success');
+    }
+  } catch (e) {
+    showToast(e.message || '撤销失败', 'error');
+  }
+}
+
 export default {
   generateMailbox,
   generateNameMailbox,
@@ -338,5 +478,9 @@ export default {
   deleteMailboxAddress,
   copyMailboxAddress,
   clearAllEmails,
-  logout
+  logout,
+  openShareDialog,
+  generateShareLink,
+  copyShareLink,
+  revokeShareLink
 };

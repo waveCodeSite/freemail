@@ -6,6 +6,18 @@
 import { getJwtPayload, isStrictAdmin, errorResponse } from './helpers.js';
 import { buildMockMailboxes, MOCK_DOMAINS } from './mock.js';
 import { extractEmail, generateRandomId } from '../utils/common.js';
+
+/**
+ * 过期时间选项映射（毫秒）
+ */
+const SHARE_EXPIRE_MAP = {
+  '1h': 60 * 60 * 1000,
+  '6h': 6 * 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+  'never': 0
+};
 import { getCachedUserQuota, getCachedSystemStat } from '../utils/cache.js';
 import {
   getOrCreateMailboxId,
@@ -99,6 +111,96 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
         return errorResponse(String(e?.message || '创建失败'), 400);
       }
     } catch (_) { return errorResponse('Bad Request', 400); }
+  }
+
+  // 生成分享链接
+  if (path === '/api/mailbox/share' && request.method === 'POST') {
+    if (isMock) return errorResponse('演示模式不可操作', 403);
+    try {
+      const body = await request.json();
+      const address = String(body.address || '').trim().toLowerCase();
+      if (!address) return errorResponse('缺少邮箱地址', 400);
+
+      const expires = String(body.expires || '24h');
+      if (!SHARE_EXPIRE_MAP.hasOwnProperty(expires)) {
+        return errorResponse('无效的过期时间选项', 400);
+      }
+
+      // 验证邮箱存在
+      const row = await db.prepare(
+        'SELECT id, share_token, share_expires_at FROM mailboxes WHERE address = ? LIMIT 1'
+      ).bind(address).first();
+      if (!row) return errorResponse('邮箱不存在', 404);
+
+      let token = row.share_token;
+      // 如果已有 token 且未过期，复用并更新过期时间；否则生成新 token
+      const isExpired = row.share_expires_at && new Date(row.share_expires_at).getTime() <= Date.now();
+      if (!token || isExpired) {
+        token = generateRandomId(32);
+      }
+
+      const expiresAt = SHARE_EXPIRE_MAP[expires] === 0
+        ? null
+        : new Date(Date.now() + SHARE_EXPIRE_MAP[expires]).toISOString();
+
+      await db.prepare(
+        'UPDATE mailboxes SET share_token = ?, share_expires_at = ? WHERE id = ?'
+      ).bind(token, expiresAt, row.id).run();
+
+      return Response.json({
+        share_token: token,
+        share_url: `/share/${token}`,
+        expires_at: expiresAt
+      });
+    } catch (e) {
+      return errorResponse('生成分享链接失败: ' + (e.message || ''), 500);
+    }
+  }
+
+  // 查询分享状态
+  if (path === '/api/mailbox/share' && request.method === 'GET') {
+    const address = url.searchParams.get('address');
+    if (!address) return errorResponse('缺少邮箱地址', 400);
+
+    if (isMock) {
+      return Response.json({ shared: false, share_token: null, share_url: null, expires_at: null, expired: false });
+    }
+
+    try {
+      const row = await db.prepare(
+        'SELECT share_token, share_expires_at FROM mailboxes WHERE address = ? LIMIT 1'
+      ).bind(address.toLowerCase()).first();
+      if (!row || !row.share_token) {
+        return Response.json({ shared: false, share_token: null, share_url: null, expires_at: null, expired: false });
+      }
+
+      const expired = row.share_expires_at ? new Date(row.share_expires_at).getTime() <= Date.now() : false;
+      return Response.json({
+        shared: true,
+        share_token: row.share_token,
+        share_url: `/share/${row.share_token}`,
+        expires_at: row.share_expires_at || null,
+        expired
+      });
+    } catch (e) {
+      return errorResponse('查询分享状态失败', 500);
+    }
+  }
+
+  // 撤销分享链接
+  if (path === '/api/mailbox/share' && request.method === 'DELETE') {
+    if (isMock) return errorResponse('演示模式不可操作', 403);
+    const address = url.searchParams.get('address');
+    if (!address) return errorResponse('缺少邮箱地址', 400);
+
+    try {
+      await db.prepare(
+        'UPDATE mailboxes SET share_token = NULL, share_expires_at = NULL WHERE address = ?'
+      ).bind(address.toLowerCase()).run();
+      return Response.json({ success: true });
+    } catch (e) {
+      return errorResponse('撤销分享失败', 500);
+    }
   }
 
   // 获取邮箱详细信息（转发、收藏等）

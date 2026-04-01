@@ -7,6 +7,7 @@ import { handleUsersApi } from './users.js';
 import { handleMailboxesApi } from './mailboxes.js';
 import { handleEmailsApi } from './emails.js';
 import { handleSendApi } from './send.js';
+import { handleShareApi } from './share.js';
 import { getJwtPayload, errorResponse } from './helpers.js';
 
 /**
@@ -29,6 +30,11 @@ export async function handleApiRequest(request, db, mailDomains, options = {
   const path = url.pathname;
   const isMock = !!options.mockOnly;
   const isMailboxOnly = !!options.mailboxOnly;
+
+  // 分享 API（免认证，优先处理）
+  if (path.startsWith('/api/share/')) {
+    return await handleShareApi(request, db, url, path, options) || errorResponse('未找到 API 路径', 404);
+  }
 
   // 邮箱用户只能访问特定的API端点和自己的数据
   if (isMailboxOnly) {

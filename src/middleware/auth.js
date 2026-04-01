@@ -283,7 +283,7 @@ export async function authMiddleware(context) {
   const url = new URL(request.url);
 
   const publicPaths = ['/api/login', '/api/logout'];
-  if (publicPaths.includes(url.pathname)) {
+  if (publicPaths.includes(url.pathname) || url.pathname.startsWith('/api/share/')) {
     return null;
   }
 

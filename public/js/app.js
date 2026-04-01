@@ -19,7 +19,7 @@ import { initSessionFromCache, validateSession, isGuest, isAdmin, applySessionUI
 import { loadDomains, getStoredLength, saveLength, updateRangeProgress, getSelectedDomainIndex, populateDomains, STORAGE_KEYS } from './modules/app/domains.js';
 import { initCompose, showSentEmailDetail } from './modules/app/compose.js';
 import { showEmailDetail, deleteEmailById, deleteSentById, copyFromEmailList, prefetchEmails } from './modules/app/email-viewer.js';
-import { generateMailbox, generateNameMailbox, createCustomMailbox, updateEmailDisplay, selectMailboxAddress, toggleMailboxPin, deleteMailboxAddress, copyMailboxAddress, clearAllEmails, logout } from './modules/app/mailbox-actions.js';
+import { generateMailbox, generateNameMailbox, createCustomMailbox, updateEmailDisplay, selectMailboxAddress, toggleMailboxPin, deleteMailboxAddress, copyMailboxAddress, clearAllEmails, logout, openShareDialog, generateShareLink, copyShareLink, revokeShareLink } from './modules/app/mailbox-actions.js';
 
 // 全局状态
 window.__GUEST_MODE__ = false;
@@ -193,19 +193,33 @@ if (els.forwardSetting) els.forwardSetting.onclick = () => {
   if (i && i.id) openForwardDialog(i.id, i.address, i.forward_to); 
   else showToast('请先选择一个邮箱', 'warn'); 
 };
-if (els.toggleFavorite) els.toggleFavorite.onclick = async () => { 
-  const i = getCurrentMailboxInfo(); 
-  if (i && i.id) { 
-    try { 
-      const result = await toggleFavorite(i.id); 
+if (els.toggleFavorite) els.toggleFavorite.onclick = async () => {
+  const i = getCurrentMailboxInfo();
+  if (i && i.id) {
+    try {
+      const result = await toggleFavorite(i.id);
       if (result.success) {
         const newInfo = { ...i, is_favorite: result.is_favorite };
-        setCurrentMailboxInfo(newInfo); 
+        setCurrentMailboxInfo(newInfo);
         updateMailboxInfoUI(newInfo);
       }
-    } catch(_) {} 
-  } else showToast('请先选择一个邮箱', 'warn'); 
+    } catch(_) {}
+  } else showToast('请先选择一个邮箱', 'warn');
 };
+
+// 分享邮箱
+const shareBtn = document.getElementById('share-mailbox');
+if (shareBtn) shareBtn.onclick = () => openShareDialog(api, showToast);
+const shareCloseBtn = document.getElementById('share-close');
+const shareModal = document.getElementById('share-modal');
+if (shareCloseBtn) shareCloseBtn.onclick = () => shareModal?.classList.remove('show');
+if (shareModal) shareModal.addEventListener('click', e => { if (e.target === shareModal) shareModal.classList.remove('show'); });
+const shareGenerateBtn = document.getElementById('share-generate-btn');
+if (shareGenerateBtn) shareGenerateBtn.onclick = () => generateShareLink(api, showToast);
+const shareCopyBtn = document.getElementById('share-copy-btn');
+if (shareCopyBtn) shareCopyBtn.onclick = () => copyShareLink(showToast);
+const shareRevokeBtn = document.getElementById('share-revoke-btn');
+if (shareRevokeBtn) shareRevokeBtn.onclick = () => revokeShareLink(api, showToast, showConfirm);
 
 // 撰写
 initCompose(els, api, showToast);
