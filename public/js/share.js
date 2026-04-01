@@ -10,8 +10,13 @@ const showToast = window.showToast || ((msg, type) => console.log(`[${type}] ${m
 
 // 从 URL 路径提取 token: /share/<token>
 const token = (() => {
-  const parts = location.pathname.split('/');
-  return parts[2] || '';
+  const match = location.pathname.match(/^\/share\/([^/]+)\/?$/);
+  if (!match?.[1]) return '';
+  try {
+    return decodeURIComponent(match[1]).trim();
+  } catch (_) {
+    return match[1].trim();
+  }
 })();
 
 // 状态
@@ -23,6 +28,8 @@ let autoRefreshTimer = null, keyword = '';
 const els = {
   shareExpired: document.getElementById('share-expired'),
   shareContent: document.getElementById('share-content'),
+  errorTitle: document.getElementById('share-error-title'),
+  errorDesc: document.getElementById('share-error-desc'),
   currentMailbox: document.getElementById('current-mailbox'),
   expiresHint: document.getElementById('share-expires-hint'),
   refreshEmailsBtn: document.getElementById('refresh-emails'),
@@ -44,7 +51,9 @@ const els = {
 };
 
 /** 显示过期/无效页面 */
-function showExpired() {
+function showExpired(title = '分享链接无效或已过期', desc = '该链接可能已被撤销或已超过有效期') {
+  if (els.errorTitle) els.errorTitle.textContent = title;
+  if (els.errorDesc) els.errorDesc.textContent = desc;
   if (els.shareExpired) els.shareExpired.style.display = '';
   if (els.shareContent) els.shareContent.style.display = 'none';
   stopAutoRefresh();
@@ -79,6 +88,9 @@ async function api(path) {
     showExpired();
     throw new Error('share_invalid');
   }
+  if (!r.ok) {
+    throw new Error(`share_request_failed:${r.status}`);
+  }
   return r;
 }
 
@@ -87,7 +99,7 @@ async function init() {
   if (!token) { showExpired(); return; }
 
   try {
-    const r = await api(`/api/share/${token}/info`);
+    const r = await api(`/api/share/${encodeURIComponent(token)}/info`);
     const info = await r.json();
     if (info.error) { showExpired(); return; }
 
@@ -109,7 +121,7 @@ async function init() {
   } catch (e) {
     if (e.message !== 'share_invalid') {
       console.error('初始化分享页面失败:', e);
-      showExpired();
+      showExpired('分享页面加载失败', '服务器暂时无法返回分享内容，请稍后重试');
     }
   }
 }
@@ -120,7 +132,7 @@ async function loadEmails() {
   if (els.emailList) els.emailList.innerHTML = generateSkeletonList(5);
 
   try {
-    const r = await api(`/api/share/${token}/emails?limit=50`);
+    const r = await api(`/api/share/${encodeURIComponent(token)}/emails?limit=50`);
     emails = await r.json();
     if (!Array.isArray(emails)) emails = [];
     renderEmails();
@@ -167,7 +179,7 @@ function renderEmails() {
 /** 显示邮件详情 */
 async function showEmail(id) {
   try {
-    const r = await api(`/api/share/${token}/email/${id}`);
+    const r = await api(`/api/share/${encodeURIComponent(token)}/email/${id}`);
     const email = await r.json();
 
     if (els.modalSubject) els.modalSubject.textContent = email.subject || '(无主题)';

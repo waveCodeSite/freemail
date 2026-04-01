@@ -5,6 +5,11 @@
 
 import { resolveAuthPayload } from '../middleware/auth.js';
 
+function extractShareTokenFromPath(pathname) {
+  const match = String(pathname || '').match(/^\/share\/([^/]+)\/?$/);
+  return match ? match[1] : '';
+}
+
 /**
  * 静态资源管理器
  */
@@ -129,7 +134,7 @@ export class AssetManager {
     }
 
     // 分享页面：/share/<token> 返回 share.html（token 由前端 JS 解析）
-    if (pathname.startsWith('/share/') && pathname.split('/').length === 3) {
+    if (extractShareTokenFromPath(pathname)) {
       const shareReq = new Request(new URL('/html/share.html', url).toString(), request);
       return env.ASSETS.fetch(shareReq);
     }

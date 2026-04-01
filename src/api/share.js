@@ -33,6 +33,24 @@ async function resolveShareToken(db, token) {
 /** 无效/过期 token 的统一错误响应 */
 const INVALID_SHARE = () => errorResponse('分享链接无效或已过期', 404);
 
+function parseShareApiPath(path) {
+  const normalizedPath = String(path || '').replace(/\/+$/, '');
+  const segments = (normalizedPath || '/').split('/');
+  if (segments.length < 5) return null;
+
+  let token = segments[3] || '';
+  try {
+    token = decodeURIComponent(token);
+  } catch (_) { }
+  token = token.trim();
+
+  return {
+    token,
+    action: segments[4] || '',
+    extra: segments[5] || ''
+  };
+}
+
 /**
  * 处理分享相关 API（免认证）
  * @param {Request} request - HTTP 请求
@@ -47,13 +65,10 @@ export async function handleShareApi(request, db, url, path, options) {
   if (!path.startsWith('/api/share/')) return null;
 
   const r2 = options.r2;
-  // 路径格式: /api/share/<token>/info | /api/share/<token>/emails | /api/share/<token>/email/<id>
-  const segments = path.split('/');
-  // segments: ['', 'api', 'share', '<token>', '<action>', ...]
-  if (segments.length < 5) return null;
+  const sharePath = parseShareApiPath(path);
+  if (!sharePath) return null;
 
-  const token = segments[3];
-  const action = segments[4];
+  const { token, action, extra } = sharePath;
 
   // 获取分享邮箱信息
   if (action === 'info') {
@@ -102,8 +117,8 @@ export async function handleShareApi(request, db, url, path, options) {
   }
 
   // 获取单封邮件详情
-  if (action === 'email' && segments[5]) {
-    const emailId = segments[5];
+  if (action === 'email' && extra) {
+    const emailId = extra;
     const mailbox = await resolveShareToken(db, token);
     if (!mailbox) return INVALID_SHARE();
 

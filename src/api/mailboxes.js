@@ -149,7 +149,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
 
       return Response.json({
         share_token: token,
-        share_url: `/share/${token}`,
+        share_url: `/share/${encodeURIComponent(token)}`,
         expires_at: expiresAt
       });
     } catch (e) {
@@ -178,7 +178,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
       return Response.json({
         shared: true,
         share_token: row.share_token,
-        share_url: `/share/${row.share_token}`,
+        share_url: `/share/${encodeURIComponent(row.share_token)}`,
         expires_at: row.share_expires_at || null,
         expired
       });
