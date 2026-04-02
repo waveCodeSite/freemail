@@ -8,15 +8,32 @@ import { renderEmailDetail, sanitizeHtml } from './modules/mailbox/email-detail.
 
 const showToast = window.showToast || ((msg, type) => console.log(`[${type}] ${msg}`));
 
-// 从 URL 路径提取 token: /share/<token>
-const token = (() => {
-  const match = location.pathname.match(/^\/share\/([^/]+)\/?$/);
-  if (!match?.[1]) return '';
+function decodeToken(rawToken) {
+  if (!rawToken) return '';
   try {
-    return decodeURIComponent(match[1]).trim();
+    return decodeURIComponent(rawToken).trim();
   } catch (_) {
-    return match[1].trim();
+    return String(rawToken).trim();
   }
+}
+
+// 从 URL 路径或查询参数提取 token，避免路径被重写后直接判定为无效
+const token = (() => {
+  const bootstrappedToken = window.__SHARE_TOKEN__
+    || document.querySelector('meta[name="share-token"]')?.getAttribute('content');
+  if (bootstrappedToken) return decodeToken(bootstrappedToken);
+
+  const normalizedPath = String(location.pathname || '').replace(/\/+$/, '');
+  const pathMatch = normalizedPath.match(/(?:^|\/)share\/([^/]+)$/);
+  if (pathMatch?.[1]) return decodeToken(pathMatch[1]);
+
+  const queryToken = new URLSearchParams(location.search).get('token');
+  if (queryToken) return decodeToken(queryToken);
+
+  const hrefMatch = String(location.href || '').match(/\/share\/([^/?#]+)/);
+  if (hrefMatch?.[1]) return decodeToken(hrefMatch[1]);
+
+  return '';
 })();
 
 // 状态
@@ -83,7 +100,15 @@ function formatExpiresHint(expiresAt) {
 
 /** API 请求 */
 async function api(path) {
-  const r = await fetch(path, { headers: { 'Cache-Control': 'no-cache' } });
+  const separator = path.includes('?') ? '&' : '?';
+  const requestUrl = `${path}${separator}_=${Date.now()}`;
+  const r = await fetch(requestUrl, {
+    cache: 'no-store',
+    headers: {
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache'
+    }
+  });
   if (r.status === 404) {
     showExpired();
     throw new Error('share_invalid');

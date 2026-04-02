@@ -28,6 +28,11 @@ import {
 } from '../db/index.js';
 import { handleMailboxAdminApi } from './mailboxAdmin.js';
 
+function buildShareUrl(token) {
+  const encodedToken = encodeURIComponent(String(token || '').trim());
+  return `/share/${encodedToken}`;
+}
+
 /**
  * 处理邮箱管理相关 API
  * @param {Request} request - HTTP 请求
@@ -134,12 +139,8 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
       ).bind(address).first();
       if (!row) return errorResponse('邮箱不存在', 404);
 
-      let token = row.share_token;
-      // 如果已有 token 且未过期，复用并更新过期时间；否则生成新 token
-      const isExpired = row.share_expires_at && new Date(row.share_expires_at).getTime() <= Date.now();
-      if (!token || isExpired) {
-        token = generateRandomId(32);
-      }
+      // 每次显式生成都轮换 token，避免浏览器或中间层缓存旧的失效结果
+      const token = generateRandomId(32);
 
       const expiresAt = SHARE_EXPIRE_MAP[expires] === 0
         ? null
@@ -151,7 +152,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
 
       return Response.json({
         share_token: token,
-        share_url: `/share/${encodeURIComponent(token)}`,
+        share_url: buildShareUrl(token),
         expires_at: expiresAt
       });
     } catch (e) {
@@ -181,7 +182,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
       return Response.json({
         shared: true,
         share_token: row.share_token,
-        share_url: `/share/${encodeURIComponent(row.share_token)}`,
+        share_url: buildShareUrl(row.share_token),
         expires_at: row.share_expires_at || null,
         expired
       });

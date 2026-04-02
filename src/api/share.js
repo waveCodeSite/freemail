@@ -7,6 +7,21 @@ import { errorResponse } from './helpers.js';
 import { parseEmailBody } from '../email/parser.js';
 import { ensureMailboxesShareFields } from '../db/index.js';
 
+function createNoStoreHeaders(extraHeaders = {}) {
+  const headers = new Headers(extraHeaders);
+  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  headers.set('Pragma', 'no-cache');
+  headers.set('Expires', '0');
+  return headers;
+}
+
+function jsonNoStore(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: createNoStoreHeaders({ 'Content-Type': 'application/json' })
+  });
+}
+
 /**
  * 通过 share_token 查询邮箱，验证 token 有效且未过期
  * @param {object} db - 数据库连接
@@ -28,7 +43,10 @@ async function resolveShareToken(db, token) {
 }
 
 /** 无效/过期 token 的统一错误响应 */
-const INVALID_SHARE = () => errorResponse('分享链接无效或已过期', 404);
+const INVALID_SHARE = () => new Response('分享链接无效或已过期', {
+  status: 404,
+  headers: createNoStoreHeaders()
+});
 
 function parseShareApiPath(path) {
   const normalizedPath = String(path || '').replace(/\/+$/, '');
@@ -83,7 +101,7 @@ export async function handleShareApi(request, db, url, path, options) {
       return errorResponse('分享链接解析失败', 500);
     }
     if (!mailbox) return INVALID_SHARE();
-    return Response.json({
+    return jsonNoStore({
       address: mailbox.address,
       expires_at: mailbox.share_expires_at || null
     });
@@ -110,7 +128,7 @@ export async function handleShareApi(request, db, url, path, options) {
           ORDER BY received_at DESC
           LIMIT ?
         `).bind(mailbox.id, limit).all();
-        return Response.json(results || []);
+        return jsonNoStore(results || []);
       } catch (_) {
         const { results } = await db.prepare(`
           SELECT id, sender, subject, received_at, is_read,
@@ -123,7 +141,7 @@ export async function handleShareApi(request, db, url, path, options) {
           ORDER BY received_at DESC
           LIMIT ?
         `).bind(mailbox.id, limit).all();
-        return Response.json(results || []);
+        return jsonNoStore(results || []);
       }
     } catch (e) {
       console.error('分享链接查询邮件失败:', e);
@@ -192,7 +210,7 @@ export async function handleShareApi(request, db, url, path, options) {
         } catch (_) { }
       }
 
-      return Response.json({ ...row, content, html_content });
+      return jsonNoStore({ ...row, content, html_content });
     } catch (e) {
       console.error('分享链接查询邮件详情失败:', e);
       return errorResponse('查询邮件详情失败', 500);

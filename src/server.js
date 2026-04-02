@@ -18,9 +18,50 @@ import { forwardByLocalPart, forwardByMailboxConfig } from './email/forwarder.js
 import { parseEmailBody, extractVerificationCode } from './email/parser.js';
 import { getForwardTarget } from './db/mailboxes.js';
 
-function extractShareTokenFromPath(pathname) {
-  const match = String(pathname || '').match(/^\/share\/([^/]+)\/?$/);
-  return match ? match[1] : '';
+function isSharePagePath(pathname) {
+  const normalizedPath = String(pathname || '').replace(/\/+$/, '') || '/';
+  return normalizedPath === '/share' || /^\/share\/[^/]+$/.test(normalizedPath);
+}
+
+function extractShareToken(reqUrl) {
+  const url = reqUrl instanceof URL ? reqUrl : new URL(String(reqUrl || 'http://localhost/'));
+  const normalizedPath = String(url.pathname || '').replace(/\/+$/, '');
+  const pathMatch = normalizedPath.match(/(?:^|\/)share\/([^/?#]+)$/);
+  const rawToken = pathMatch?.[1] || url.searchParams.get('token') || '';
+  try {
+    return decodeURIComponent(rawToken).trim();
+  } catch (_) {
+    return String(rawToken).trim();
+  }
+}
+
+async function fetchSharePage(request, reqUrl, env) {
+  const shareReq = new Request(new URL('/html/share.html', reqUrl).toString(), request);
+  let response = await env.ASSETS.fetch(shareReq);
+  if ([301, 302, 303, 307, 308].includes(response.status)) {
+    const location = response.headers.get('Location') || response.headers.get('location') || '';
+    if (location) {
+      const redirectedUrl = new URL(location, reqUrl);
+      response = await env.ASSETS.fetch(new Request(redirectedUrl.toString(), request));
+    }
+  }
+  const token = extractShareToken(reqUrl);
+  const headers = new Headers(response.headers);
+  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  headers.set('Pragma', 'no-cache');
+  headers.set('Expires', '0');
+  const contentType = headers.get('Content-Type') || headers.get('content-type') || '';
+  if (!contentType.includes('text/html')) {
+    return new Response(response.body, { status: response.status, headers });
+  }
+
+  const html = await response.text();
+  const escapedToken = JSON.stringify(token);
+  const injected = html.replace(
+    '</head>',
+    `  <meta name="share-token" content=${escapedToken} />\n  <script>window.__SHARE_TOKEN__=${escapedToken};</script>\n</head>`
+  );
+  return new Response(injected, { status: response.status, headers });
 }
 
 export default {
@@ -59,11 +100,9 @@ export default {
 
     // 分享页面：/share/<token> 直接返回 share.html（在 assetManager 之前拦截）
     const reqUrl = new URL(request.url);
-    if (extractShareTokenFromPath(reqUrl.pathname)) {
-      const assetManager = createAssetManager();
+    if (isSharePagePath(reqUrl.pathname)) {
       if (env.ASSETS && env.ASSETS.fetch) {
-        const shareReq = new Request(new URL('/html/share.html', reqUrl).toString(), request);
-        return env.ASSETS.fetch(shareReq);
+        return fetchSharePage(request, reqUrl, env);
       }
     }
 
