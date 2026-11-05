@@ -4,8 +4,16 @@
  */
 
 import { errorResponse } from './helpers.js';
-import { parseEmailBody } from '../email/parser.js';
+import { loadEmailBodyFromR2 } from './emails.js';
 import { ensureMailboxesShareFields } from '../db/index.js';
+
+let _shareFieldsEnsured = false;
+
+async function safeEnsureShareFields(db) {
+  if (_shareFieldsEnsured) return;
+  await ensureMailboxesShareFields(db);
+  _shareFieldsEnsured = true;
+}
 
 function createNoStoreHeaders(extraHeaders = {}) {
   const headers = new Headers(extraHeaders);
@@ -84,7 +92,7 @@ export async function handleShareApi(request, db, url, path, options) {
   if (!sharePath) return null;
 
   try {
-    await ensureMailboxesShareFields(db);
+    await safeEnsureShareFields(db);
   } catch (_) {
     return errorResponse('分享链接解析失败', 500);
   }
@@ -179,24 +187,7 @@ export async function handleShareApi(request, db, url, path, options) {
       }
 
       const row = results[0];
-      let content = '';
-      let html_content = '';
-
-      // 从 R2 读取邮件内容
-      try {
-        if (row.r2_object_key && r2) {
-          const obj = await r2.get(row.r2_object_key);
-          if (obj) {
-            let raw = '';
-            if (typeof obj.text === 'function') raw = await obj.text();
-            else if (typeof obj.arrayBuffer === 'function') raw = await new Response(await obj.arrayBuffer()).text();
-            else raw = await new Response(obj.body).text();
-            const parsed = await parseEmailBody(raw || '');
-            content = parsed.text || '';
-            html_content = parsed.html || '';
-          }
-        }
-      } catch (_) { }
+      let { content, html_content } = await loadEmailBodyFromR2(r2, row.r2_object_key);
 
       // 回退到数据库内容
       if (!content && !html_content) {
@@ -205,8 +196,8 @@ export async function handleShareApi(request, db, url, path, options) {
             'SELECT content, html_content FROM messages WHERE id = ?'
           ).bind(emailId).all();
           const fr = (fallback?.results || [])[0] || {};
-          content = content || fr.content || '';
-          html_content = html_content || fr.html_content || '';
+          content = fr.content || '';
+          html_content = fr.html_content || '';
         } catch (_) { }
       }
 

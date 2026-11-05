@@ -19,7 +19,7 @@ function mailboxOnlyTimeFilter(enabled) {
 }
 
 // 邮件正文优先从 R2 原始 EML 解析，失败时由调用方回退到数据库字段。
-async function loadEmailBodyFromR2(r2, objectKey) {
+export async function loadEmailBodyFromR2(r2, objectKey) {
   if (!r2 || !objectKey) return { content: '', html_content: '' };
   try {
     const obj = await r2.get(objectKey);

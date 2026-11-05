@@ -121,6 +121,8 @@ async function api(path) {
 
 /** 初始化：获取分享信息 */
 async function init() {
+  initThemeToggle();
+
   if (!token) { showExpired(); return; }
 
   try {
@@ -154,7 +156,9 @@ async function init() {
 /** 加载邮件列表 */
 async function loadEmails() {
   if (els.listLoading) els.listLoading.style.display = 'flex';
-  if (els.emailList) els.emailList.innerHTML = generateSkeletonList(5);
+  if (els.emailList && (!emails || emails.length === 0)) {
+    els.emailList.innerHTML = generateSkeletonList(5);
+  }
 
   try {
     const r = await api(`/api/share/${encodeURIComponent(token)}/emails?limit=50`);
@@ -189,9 +193,23 @@ function renderEmails() {
     renderEmailList(pageItems, els.emailList);
     if (els.emptyState) els.emptyState.style.display = 'none';
 
-    // 绑定点击事件
+    // 绑定邮件点击打开详情
     els.emailList.querySelectorAll('.email-item').forEach(item => {
       item.onclick = () => showEmail(item.dataset.emailId);
+    });
+
+    // 绑定列表页验证码一键复制（阻止冒泡）
+    els.emailList.querySelectorAll('.email-code').forEach(codeEl => {
+      codeEl.onclick = async (e) => {
+        e.stopPropagation();
+        const code = codeEl.textContent.replace(/^🔑\s*/, '').trim();
+        try {
+          await navigator.clipboard.writeText(code);
+          showToast('验证码已复制', 'success');
+        } catch (_) {
+          showToast('复制失败', 'error');
+        }
+      };
     });
 
     if (els.listPager) els.listPager.style.display = total > pageSize ? 'flex' : 'none';
@@ -211,7 +229,7 @@ async function showEmail(id) {
     if (els.modalContent) els.modalContent.innerHTML = renderEmailDetail(email);
 
     // 绑定验证码复制
-    els.modalContent?.querySelectorAll('.code-value').forEach(el => {
+    els.modalContent?.querySelectorAll('.code-value, .code-highlight').forEach(el => {
       el.onclick = async () => {
         const code = el.dataset.code || el.textContent;
         try { await navigator.clipboard.writeText(code); showToast('已复制', 'success'); }
@@ -239,6 +257,40 @@ function startAutoRefresh() {
 function stopAutoRefresh() {
   if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
 }
+
+/** 初始化主题切换按钮 */
+function initThemeToggle() {
+  const btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+
+  function updateIcon() {
+    if (window.freemailTheme) {
+      const t = window.freemailTheme.getTheme();
+      const icon = btn.querySelector('svg use');
+      if (icon) icon.setAttribute('href', `/icons/sprites.svg#icon-${t === 'dark' ? 'sun' : 'moon'}`);
+      btn.title = t === 'dark' ? '切换到明亮模式' : '切换到暗黑模式';
+    }
+  }
+
+  updateIcon();
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (window.freemailTheme) {
+      window.freemailTheme.toggle();
+      updateIcon();
+    }
+  });
+}
+
+// 标签页可见性变化时优化轮询（后台时暂停，前台时恢复并立即拉取）
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopAutoRefresh();
+  } else if (els.autoRefresh?.checked) {
+    loadEmails();
+    startAutoRefresh();
+  }
+});
 
 // 事件绑定
 els.refreshEmailsBtn?.addEventListener('click', async () => {

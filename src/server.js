@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono';
-import { authMiddleware } from './middleware/app.js';
+import { authMiddleware, rateLimiter } from './middleware/app.js';
 import authRoutes from './routes/auth.js';
 import apiRoutes from './routes/api.js';
 import staticRoutes from './routes/static.js';
@@ -26,6 +26,9 @@ app.use('*', async (c, next) => {
 
 // 公开认证路由（/api/logout, /api/login）
 app.route('/', authRoutes);
+
+// 分享 API 频控保护（单 IP 每分钟最多 60 次请求）
+app.use('/api/share/*', rateLimiter({ windowMs: 60_000, max: 60 }));
 
 // 认证中间件
 app.use('/api/*', authMiddleware());

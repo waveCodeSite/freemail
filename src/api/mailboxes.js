@@ -28,6 +28,13 @@ const SHARE_EXPIRE_MAP = {
   'never': 0
 };
 
+let _shareFieldsEnsured = false;
+async function safeEnsureShareFields(db) {
+  if (_shareFieldsEnsured) return;
+  await safeEnsureShareFields(db);
+  _shareFieldsEnsured = true;
+}
+
 function buildShareUrl(token) {
   const encodedToken = encodeURIComponent(String(token || '').trim());
   return `/share/${encodedToken}`;
@@ -168,7 +175,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
   if (path === '/api/mailbox/share' && request.method === 'POST') {
     if (isMock) return errorResponse('演示模式不可操作', 403);
     try {
-      await ensureMailboxesShareFields(db);
+      await safeEnsureShareFields(db);
       const body = await request.json();
       const address = String(body.address || '').trim().toLowerCase();
       if (!address) return errorResponse('缺少邮箱地址', 400);
@@ -218,7 +225,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
     }
 
     try {
-      await ensureMailboxesShareFields(db);
+      await safeEnsureShareFields(db);
       if (!isStrictAdmin(request, options)) {
         const access = await getMailboxAccess(db, request, options, { address: address.toLowerCase() });
         if (!access.exists) return errorResponse('Not Found', 404);
@@ -252,7 +259,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
     if (!address) return errorResponse('缺少邮箱地址', 400);
 
     try {
-      await ensureMailboxesShareFields(db);
+      await safeEnsureShareFields(db);
       if (!isStrictAdmin(request, options)) {
         const access = await getMailboxAccess(db, request, options, { address: address.toLowerCase() });
         if (!access.exists) return errorResponse('Not Found', 404);
