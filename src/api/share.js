@@ -191,7 +191,7 @@ export async function handleShareApi(request, db, url, path, options) {
             if (typeof obj.text === 'function') raw = await obj.text();
             else if (typeof obj.arrayBuffer === 'function') raw = await new Response(await obj.arrayBuffer()).text();
             else raw = await new Response(obj.body).text();
-            const parsed = parseEmailBody(raw || '');
+            const parsed = await parseEmailBody(raw || '');
             content = parsed.text || '';
             html_content = parsed.html || '';
           }

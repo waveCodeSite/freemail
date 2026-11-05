@@ -3,9 +3,18 @@
  * @module api/mailboxes
  */
 
-import { getJwtPayload, isStrictAdmin, errorResponse } from './helpers.js';
+import { getJwtPayload, isStrictAdmin, getMailboxAccess, errorResponse } from './helpers.js';
 import { buildMockMailboxes, MOCK_DOMAINS } from './mock.js';
 import { extractEmail, generateRandomId } from '../utils/common.js';
+import { getCachedUserQuota, getCachedSystemStat, invalidateSystemStatCache } from '../utils/cache.js';
+import {
+  getOrCreateMailboxId,
+  toggleMailboxPin,
+  getTotalMailboxCount,
+  assignMailboxToUser,
+  ensureMailboxesShareFields
+} from '../db/index.js';
+import { handleMailboxAdminApi } from './mailboxAdmin.js';
 
 /**
  * 过期时间选项映射（毫秒）
@@ -18,15 +27,6 @@ const SHARE_EXPIRE_MAP = {
   '30d': 30 * 24 * 60 * 60 * 1000,
   'never': 0
 };
-import { getCachedUserQuota, getCachedSystemStat } from '../utils/cache.js';
-import {
-  getOrCreateMailboxId,
-  toggleMailboxPin,
-  getTotalMailboxCount,
-  assignMailboxToUser,
-  ensureMailboxesShareFields
-} from '../db/index.js';
-import { handleMailboxAdminApi } from './mailboxAdmin.js';
 
 function buildShareUrl(token) {
   const encodedToken = encodeURIComponent(String(token || '').trim());
@@ -119,95 +119,6 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
     } catch (_) { return errorResponse('Bad Request', 400); }
   }
 
-  // 生成分享链接
-  if (path === '/api/mailbox/share' && request.method === 'POST') {
-    if (isMock) return errorResponse('演示模式不可操作', 403);
-    try {
-      await ensureMailboxesShareFields(db);
-      const body = await request.json();
-      const address = String(body.address || '').trim().toLowerCase();
-      if (!address) return errorResponse('缺少邮箱地址', 400);
-
-      const expires = String(body.expires || '24h');
-      if (!SHARE_EXPIRE_MAP.hasOwnProperty(expires)) {
-        return errorResponse('无效的过期时间选项', 400);
-      }
-
-      // 验证邮箱存在
-      const row = await db.prepare(
-        'SELECT id, share_token, share_expires_at FROM mailboxes WHERE address = ? LIMIT 1'
-      ).bind(address).first();
-      if (!row) return errorResponse('邮箱不存在', 404);
-
-      // 每次显式生成都轮换 token，避免浏览器或中间层缓存旧的失效结果
-      const token = generateRandomId(32);
-
-      const expiresAt = SHARE_EXPIRE_MAP[expires] === 0
-        ? null
-        : new Date(Date.now() + SHARE_EXPIRE_MAP[expires]).toISOString();
-
-      await db.prepare(
-        'UPDATE mailboxes SET share_token = ?, share_expires_at = ? WHERE id = ?'
-      ).bind(token, expiresAt, row.id).run();
-
-      return Response.json({
-        share_token: token,
-        share_url: buildShareUrl(token),
-        expires_at: expiresAt
-      });
-    } catch (e) {
-      return errorResponse('生成分享链接失败: ' + (e.message || ''), 500);
-    }
-  }
-
-  // 查询分享状态
-  if (path === '/api/mailbox/share' && request.method === 'GET') {
-    const address = url.searchParams.get('address');
-    if (!address) return errorResponse('缺少邮箱地址', 400);
-
-    if (isMock) {
-      return Response.json({ shared: false, share_token: null, share_url: null, expires_at: null, expired: false });
-    }
-
-    try {
-      await ensureMailboxesShareFields(db);
-      const row = await db.prepare(
-        'SELECT share_token, share_expires_at FROM mailboxes WHERE address = ? LIMIT 1'
-      ).bind(address.toLowerCase()).first();
-      if (!row || !row.share_token) {
-        return Response.json({ shared: false, share_token: null, share_url: null, expires_at: null, expired: false });
-      }
-
-      const expired = row.share_expires_at ? new Date(row.share_expires_at).getTime() <= Date.now() : false;
-      return Response.json({
-        shared: true,
-        share_token: row.share_token,
-        share_url: buildShareUrl(row.share_token),
-        expires_at: row.share_expires_at || null,
-        expired
-      });
-    } catch (e) {
-      return errorResponse('查询分享状态失败', 500);
-    }
-  }
-
-  // 撤销分享链接
-  if (path === '/api/mailbox/share' && request.method === 'DELETE') {
-    if (isMock) return errorResponse('演示模式不可操作', 403);
-    const address = url.searchParams.get('address');
-    if (!address) return errorResponse('缺少邮箱地址', 400);
-
-    try {
-      await ensureMailboxesShareFields(db);
-      await db.prepare(
-        'UPDATE mailboxes SET share_token = NULL, share_expires_at = NULL WHERE address = ?'
-      ).bind(address.toLowerCase()).run();
-      return Response.json({ success: true });
-    } catch (e) {
-      return errorResponse('撤销分享失败', 500);
-    }
-  }
-
   // 获取邮箱详细信息（转发、收藏等）
   if (path === '/api/mailbox/info' && request.method === 'GET') {
     const address = url.searchParams.get('address');
@@ -239,6 +150,8 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
       }
       
       const row = results[0];
+      const access = await getMailboxAccess(db, request, options, { mailboxId: row.id });
+      if (!access.allowed) return errorResponse('Forbidden', 403);
       return Response.json({
         id: row.id,
         address: row.address,
@@ -248,6 +161,110 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
       });
     } catch (e) {
       return errorResponse('查询失败', 500);
+    }
+  }
+
+  // 生成分享链接
+  if (path === '/api/mailbox/share' && request.method === 'POST') {
+    if (isMock) return errorResponse('演示模式不可操作', 403);
+    try {
+      await ensureMailboxesShareFields(db);
+      const body = await request.json();
+      const address = String(body.address || '').trim().toLowerCase();
+      if (!address) return errorResponse('缺少邮箱地址', 400);
+
+      if (!isStrictAdmin(request, options)) {
+        const access = await getMailboxAccess(db, request, options, { address });
+        if (!access.exists) return errorResponse('Not Found', 404);
+        if (!access.allowed) return errorResponse('Forbidden', 403);
+      }
+
+      const expires = String(body.expires || '24h');
+      if (!SHARE_EXPIRE_MAP.hasOwnProperty(expires)) {
+        return errorResponse('无效的过期时间选项', 400);
+      }
+
+      const row = await db.prepare(
+        'SELECT id, share_token, share_expires_at FROM mailboxes WHERE address = ? LIMIT 1'
+      ).bind(address).first();
+      if (!row) return errorResponse('邮箱不存在', 404);
+
+      const token = generateRandomId(32);
+      const expiresAt = SHARE_EXPIRE_MAP[expires] === 0
+        ? null
+        : new Date(Date.now() + SHARE_EXPIRE_MAP[expires]).toISOString();
+
+      await db.prepare(
+        'UPDATE mailboxes SET share_token = ?, share_expires_at = ? WHERE id = ?'
+      ).bind(token, expiresAt, row.id).run();
+
+      return Response.json({
+        share_token: token,
+        share_url: buildShareUrl(token),
+        expires_at: expiresAt
+      });
+    } catch (e) {
+      return errorResponse('生成分享链接失败: ' + (e.message || ''), 500);
+    }
+  }
+
+  // 查询分享状态
+  if (path === '/api/mailbox/share' && request.method === 'GET') {
+    const address = url.searchParams.get('address');
+    if (!address) return errorResponse('缺少邮箱地址', 400);
+
+    if (isMock) {
+      return Response.json({ shared: false, share_token: null, share_url: null, expires_at: null, expired: false });
+    }
+
+    try {
+      await ensureMailboxesShareFields(db);
+      if (!isStrictAdmin(request, options)) {
+        const access = await getMailboxAccess(db, request, options, { address: address.toLowerCase() });
+        if (!access.exists) return errorResponse('Not Found', 404);
+        if (!access.allowed) return errorResponse('Forbidden', 403);
+      }
+
+      const row = await db.prepare(
+        'SELECT share_token, share_expires_at FROM mailboxes WHERE address = ? LIMIT 1'
+      ).bind(address.toLowerCase()).first();
+      if (!row || !row.share_token) {
+        return Response.json({ shared: false, share_token: null, share_url: null, expires_at: null, expired: false });
+      }
+
+      const expired = row.share_expires_at ? new Date(row.share_expires_at).getTime() <= Date.now() : false;
+      return Response.json({
+        shared: true,
+        share_token: row.share_token,
+        share_url: buildShareUrl(row.share_token),
+        expires_at: row.share_expires_at || null,
+        expired
+      });
+    } catch (e) {
+      return errorResponse('查询分享状态失败', 500);
+    }
+  }
+
+  // 撤销分享链接
+  if (path === '/api/mailbox/share' && request.method === 'DELETE') {
+    if (isMock) return errorResponse('演示模式不可操作', 403);
+    const address = url.searchParams.get('address');
+    if (!address) return errorResponse('缺少邮箱地址', 400);
+
+    try {
+      await ensureMailboxesShareFields(db);
+      if (!isStrictAdmin(request, options)) {
+        const access = await getMailboxAccess(db, request, options, { address: address.toLowerCase() });
+        if (!access.exists) return errorResponse('Not Found', 404);
+        if (!access.allowed) return errorResponse('Forbidden', 403);
+      }
+
+      await db.prepare(
+        'UPDATE mailboxes SET share_token = NULL, share_expires_at = NULL WHERE address = ?'
+      ).bind(address.toLowerCase()).run();
+      return Response.json({ success: true });
+    } catch (e) {
+      return errorResponse('撤销分享失败', 500);
     }
   }
 
@@ -261,7 +278,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
       return Response.json({ limit: 999, used: 2, remaining: 997 });
     }
     
-    if (isStrictAdmin(request, options) || role === 'admin') {
+    if (isStrictAdmin(request, options)) {
       const totalMailboxes = await getCachedSystemStat(db, 'total_mailboxes', async () => {
         return await getTotalMailboxCount(db);
       });
@@ -325,7 +342,8 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
           SELECT id, address, created_at, 0 AS is_pinned,
                  CASE WHEN (password_hash IS NULL OR password_hash = '') THEN 1 ELSE 0 END AS password_is_default,
                  COALESCE(can_login, 0) AS can_login,
-                 forward_to, COALESCE(is_favorite, 0) AS is_favorite
+                 forward_to, COALESCE(is_favorite, 0) AS is_favorite,
+                 share_token, share_expires_at
           FROM mailboxes
           WHERE address = ?
           LIMIT 1
@@ -348,6 +366,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
         } else {
           const uname = String(options?.adminName || 'admin').toLowerCase();
           await db.prepare("INSERT INTO users (username, role, can_send, mailbox_limit) VALUES (?, 'admin', 1, 9999)").bind(uname).run();
+          invalidateSystemStatCache('user_stats');
           const again = await db.prepare('SELECT id FROM users WHERE username = ?').bind(uname).all();
           uid = Number(again?.results?.[0]?.id || 0);
         }
@@ -355,7 +374,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
 
       if (!uid && !strictAdmin) return Response.json({ list: [], total: 0 });
 
-      // 支持两种分页参数：page/size 或 limit/offset
+      // 支持两种分页参数：page/size 和 limit/offset
       let limit, offset;
       const pageParam = url.searchParams.get('page');
       const sizeParam = url.searchParams.get('size');
@@ -433,20 +452,26 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
         const adminBindParams = [uid, ...bindParams];
         const adminCountBindParams = [uid, ...countBindParams];
         
-        // 获取总数
-        const countResult = await db.prepare(`
-          SELECT COUNT(*) as total
-          FROM mailboxes m
-          LEFT JOIN user_mailboxes um ON m.id = um.mailbox_id AND um.user_id = ?
-          ${whereClause}
-        `).bind(...adminCountBindParams).first();
-        const total = countResult?.total || 0;
+        // 获取总数 - 无过滤条件时使用缓存避免全表扫描
+        let total;
+        if (whereConditions.length === 0) {
+          total = await getTotalMailboxCount(db);
+        } else {
+          const countResult = await db.prepare(`
+            SELECT COUNT(*) as total
+            FROM mailboxes m
+            LEFT JOIN user_mailboxes um ON m.id = um.mailbox_id AND um.user_id = ?
+            ${whereClause}
+          `).bind(...adminCountBindParams).first();
+          total = countResult?.total || 0;
+        }
         
         const { results } = await db.prepare(`
           SELECT m.id, m.address, m.created_at, COALESCE(um.is_pinned, 0) AS is_pinned,
                  CASE WHEN (m.password_hash IS NULL OR m.password_hash = '') THEN 1 ELSE 0 END AS password_is_default,
                  COALESCE(m.can_login, 0) AS can_login,
-                 m.forward_to, COALESCE(m.is_favorite, 0) AS is_favorite
+                 m.forward_to, COALESCE(m.is_favorite, 0) AS is_favorite,
+                 m.share_token, m.share_expires_at
           FROM mailboxes m
           LEFT JOIN user_mailboxes um ON m.id = um.mailbox_id AND um.user_id = ?
           ${whereClause}
@@ -456,19 +481,25 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
         return Response.json({ list: results || [], total });
       } else if (strictAdmin) {
         // 严格管理员但没有 uid（不应该发生，但作为兜底）
-        // 获取总数
-        const countResult = await db.prepare(`
-          SELECT COUNT(*) as total
-          FROM mailboxes m
-          ${whereClause}
-        `).bind(...countBindParams).first();
-        const total = countResult?.total || 0;
+        // 获取总数 - 无过滤条件时使用缓存避免全表扫描
+        let total;
+        if (whereConditions.length === 0) {
+          total = await getTotalMailboxCount(db);
+        } else {
+          const countResult = await db.prepare(`
+            SELECT COUNT(*) as total
+            FROM mailboxes m
+            ${whereClause}
+          `).bind(...countBindParams).first();
+          total = countResult?.total || 0;
+        }
         
         const { results } = await db.prepare(`
           SELECT m.id, m.address, m.created_at, 0 AS is_pinned,
                  CASE WHEN (m.password_hash IS NULL OR m.password_hash = '') THEN 1 ELSE 0 END AS password_is_default,
                  COALESCE(m.can_login, 0) AS can_login,
-                 m.forward_to, COALESCE(m.is_favorite, 0) AS is_favorite
+                 m.forward_to, COALESCE(m.is_favorite, 0) AS is_favorite,
+                 m.share_token, m.share_expires_at
           FROM mailboxes m
           ${whereClause}
           ORDER BY m.created_at DESC
@@ -490,7 +521,8 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
           SELECT m.id, m.address, m.created_at, um.is_pinned,
                  CASE WHEN (m.password_hash IS NULL OR m.password_hash = '') THEN 1 ELSE 0 END AS password_is_default,
                  COALESCE(m.can_login, 0) AS can_login,
-                 m.forward_to, COALESCE(m.is_favorite, 0) AS is_favorite
+                 m.forward_to, COALESCE(m.is_favorite, 0) AS is_favorite,
+                 m.share_token, m.share_expires_at
           FROM user_mailboxes um
           JOIN mailboxes m ON m.id = um.mailbox_id
           ${whereClause}
@@ -507,8 +539,20 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
   // 切换邮箱置顶状态
   if (path === '/api/mailboxes/pin' && request.method === 'POST') {
     if (isMock) return errorResponse('演示模式不可操作', 403);
-    const address = url.searchParams.get('address');
+    let address = url.searchParams.get('address');
+    if (!address) {
+      try {
+        const ct = request.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          address = (await request.json())?.address;
+        } else if (ct.includes('multipart/form-data') || ct.includes('application/x-www-form-urlencoded')) {
+          const fd = await request.formData();
+          address = fd.get('address');
+        }
+      } catch (_) {}
+    }
     if (!address) return errorResponse('缺少 address 参数', 400);
+    address = String(address).trim().toLowerCase();
     const payload = getJwtPayload(request, options);
     let uid = Number(payload?.userId || 0);
     
@@ -521,6 +565,7 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
         } else {
           const uname = String(options?.adminName || 'admin').toLowerCase();
           await db.prepare("INSERT INTO users (username, role, can_send, mailbox_limit) VALUES (?, 'admin', 1, 9999)").bind(uname).run();
+          invalidateSystemStatCache('user_stats');
           const again = await db.prepare('SELECT id FROM users WHERE username = ?').bind(uname).all();
           uid = Number(again?.results?.[0]?.id || 0);
         }
@@ -528,6 +573,11 @@ export async function handleMailboxesApi(request, db, mailDomains, url, path, op
     }
     if (!uid) return errorResponse('未登录', 401);
     try {
+      if (!isStrictAdmin(request, options)) {
+        const access = await getMailboxAccess(db, request, options, { address });
+        if (!access.exists) return errorResponse('Not Found', 404);
+        if (!access.allowed) return errorResponse('Forbidden', 403);
+      }
       const result = await toggleMailboxPin(db, address, uid);
       return Response.json({ success: true, ...result });
     } catch (e) {

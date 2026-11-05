@@ -9,15 +9,18 @@
  * @param {string} localPart - 收件人的本地部分
  * @param {object} ctx - 上下文对象
  * @param {object} env - 环境变量对象
+ * @returns {{hasTarget: boolean, forwarded: boolean}} 转发状态
  */
 export function forwardByLocalPart(message, localPart, ctx, env) {
   const rules = parseForwardRules(env?.FORWARD_RULES);
   const target = resolveTargetEmail(localPart, rules);
-  if (!target) return;
+  if (!target) return { hasTarget: false, forwarded: false };
   try {
     ctx.waitUntil(message.forward(target));
+    return { hasTarget: true, forwarded: true };
   } catch (e) {
     console.error('Forward error:', e);
+    return { hasTarget: true, forwarded: false };
   }
 }
 
@@ -93,19 +96,19 @@ function resolveTargetEmail(localPart, rules) {
  * @param {object} message - 邮件消息对象
  * @param {string} forwardTo - 数据库中配置的转发目标地址
  * @param {object} ctx - 上下文对象
- * @returns {boolean} 是否成功触发转发
+ * @returns {{hasTarget: boolean, forwarded: boolean}} 转发状态
  */
 export function forwardByMailboxConfig(message, forwardTo, ctx) {
-  if (!forwardTo || typeof forwardTo !== 'string') return false;
+  if (!forwardTo || typeof forwardTo !== 'string') return { hasTarget: false, forwarded: false };
   const target = forwardTo.trim();
-  if (!target) return false;
+  if (!target) return { hasTarget: false, forwarded: false };
 
   try {
     ctx.waitUntil(message.forward(target));
     console.log(`邮件已转发至: ${target} (邮箱配置)`);
-    return true;
+    return { hasTarget: true, forwarded: true };
   } catch (e) {
     console.error('邮箱配置转发失败:', e);
-    return false;
+    return { hasTarget: true, forwarded: false };
   }
 }

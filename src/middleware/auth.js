@@ -1,12 +1,32 @@
 /**
- * 认证中间件模块
+ * 认证中间件模�?
  * @module middleware/auth
  */
 
 export const COOKIE_NAME = 'iding-session';
 
-// 默认会话过期时间（天）
+// 默认会话过期时间（天�?
 const DEFAULT_SESSION_EXPIRE_DAYS = 7;
+
+// CryptoKey 缓存（全局共享，避免每次请求重�?importKey�?
+const keyCache = new Map();
+
+async function getOrImportKey(secret, usage) {
+  const k = String(secret || '');
+  for (const [cacheKey, entry] of keyCache) {
+    if (entry.secret === k && entry.usage === usage) {
+      return cacheKey;
+    }
+  }
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', encoder.encode(k),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false, [usage]
+  );
+  keyCache.set(key, { secret: k, usage });
+  return key;
+}
 
 /**
  * 获取会话过期秒数
@@ -22,7 +42,7 @@ export function getSessionExpireSeconds(days) {
 /**
  * 创建JWT令牌
  * @param {string} secret - JWT签名密钥
- * @param {object} extraPayload - 额外的负载数据
+ * @param {object} extraPayload - 额外的负载数�?
  * @param {number} expireDays - 过期天数（可选，默认从环境变量或7天）
  * @returns {Promise<string>} 生成的JWT令牌
  */
@@ -32,13 +52,7 @@ export async function createJwt(secret, extraPayload = {}, expireDays = DEFAULT_
   const payload = { exp: Math.floor(Date.now() / 1000) + expireSeconds, ...extraPayload };
   const encoder = new TextEncoder();
   const data = base64UrlEncode(JSON.stringify(header)) + '.' + base64UrlEncode(JSON.stringify(payload));
-  const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
+  const key = await getOrImportKey(secret, 'sign');
   const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(data));
   return data + '.' + base64UrlEncode(new Uint8Array(signature));
 }
@@ -58,13 +72,7 @@ export async function verifyJwt(secret, cookieHeader) {
   if (parts.length !== 3) return false;
   try {
     const encoder = new TextEncoder();
-    const key = await crypto.subtle.importKey(
-      'raw',
-      encoder.encode(secret),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify']
-    );
+    const key = await getOrImportKey(secret, 'verify');
     const valid = await crypto.subtle.verify('HMAC', key, base64UrlDecode(parts[2]), encoder.encode(parts[0] + '.' + parts[1]));
     if (!valid) return false;
     const payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(parts[1])));
@@ -76,11 +84,11 @@ export async function verifyJwt(secret, cookieHeader) {
 }
 
 /**
- * 构建会话Cookie字符串
+ * 构建会话Cookie字符�?
  * @param {string} token - JWT令牌
  * @param {string} reqUrl - 请求URL
  * @param {number} expireDays - 过期天数（可选，默认7天）
- * @returns {string} Cookie字符串
+ * @returns {string} Cookie字符�?
  */
 export function buildSessionCookie(token, reqUrl = '', expireDays = DEFAULT_SESSION_EXPIRE_DAYS) {
   const maxAge = getSessionExpireSeconds(expireDays);
@@ -97,8 +105,8 @@ export function buildSessionCookie(token, reqUrl = '', expireDays = DEFAULT_SESS
 /**
  * 验证邮箱登录
  * @param {string} emailAddress - 邮箱地址
- * @param {string} password - 输入的密码
- * @param {object} DB - 数据库连接对象
+ * @param {string} password - 输入的密�?
+ * @param {object} DB - 数据库连接对�?
  * @returns {Promise<object|false>} 验证成功返回邮箱信息，失败返回false
  */
 export async function verifyMailboxLogin(emailAddress, password, DB) {
@@ -118,15 +126,25 @@ export async function verifyMailboxLogin(emailAddress, password, DB) {
       }
 
       let passwordValid = false;
+      let newHash = null;
 
       if (mailbox.password_hash) {
-        passwordValid = await verifyPassword(password, mailbox.password_hash);
+        const pwResult = await verifyPassword(password, mailbox.password_hash);
+        passwordValid = !!pwResult?.valid;
+        newHash = pwResult?.newHash || null;
       } else {
         passwordValid = (password === email);
       }
 
       if (!passwordValid) {
         return false;
+      }
+
+      // 旧版无盐 SHA-256 自动迁移�?PBKDF2（与 users 登录路径保持一致）
+      if (newHash) {
+        try {
+          await DB.prepare('UPDATE mailboxes SET password_hash = ? WHERE id = ?').bind(newHash, mailbox.id).run();
+        } catch (_) { /* 迁移失败不影响登�?*/ }
       }
 
       await DB.prepare('UPDATE mailboxes SET last_accessed_at = CURRENT_TIMESTAMP WHERE id = ?')
@@ -149,7 +167,7 @@ export async function verifyMailboxLogin(emailAddress, password, DB) {
 }
 
 /**
- * SHA256哈希函数
+ * SHA256哈希函数（保留用于旧哈希兼容�?JWT 签名�?
  */
 async function sha256Hex(text) {
   const encoder = new TextEncoder();
@@ -159,29 +177,80 @@ async function sha256Hex(text) {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+const HASH_PREFIX = 'pbkdf2:sha256:';
+
 /**
- * 验证密码
- * @param {string} rawPassword - 原始密码
- * @param {string} hashed - 哈希密码
- * @returns {Promise<boolean>} 验证结果
+ * 使用 PBKDF2-SHA256 生成带盐的密码哈希�?
+ * 格式: pbkdf2:sha256:{base64_salt}:{base64_hash}
  */
-export async function verifyPassword(rawPassword, hashed) {
-  if (!hashed) return false;
+async function pbkdf2Hash(password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    key, 256
+  );
+  const saltB64 = btoa(String.fromCharCode(...salt));
+  const hashB64 = btoa(String.fromCharCode(...new Uint8Array(bits)));
+  return HASH_PREFIX + saltB64 + ':' + hashB64;
+}
+
+/**
+ * 验证密码。支持旧版无�?SHA-256（检测到后自动迁移到 PBKDF2）�?
+ * @param {string} rawPassword - 原始密码
+ * @param {string} stored - 存储的哈希�?
+ * @returns {Promise<{valid: boolean, newHash?: string}>}
+ */
+export async function verifyPassword(rawPassword, stored) {
+  if (!stored) return { valid: false };
+
+  // PBKDF2 格式
+  if (stored.startsWith(HASH_PREFIX)) {
+    const parts = stored.slice(HASH_PREFIX.length).split(':');
+    if (parts.length !== 2) return { valid: false };
+    const [saltB64, hashB64] = parts;
+    try {
+      const salt = Uint8Array.from(atob(saltB64), c => c.charCodeAt(0));
+      const expectedHash = new Uint8Array(atob(hashB64).split('').map(c => c.charCodeAt(0)));
+      const encoder = new TextEncoder();
+      const key = await crypto.subtle.importKey('raw', encoder.encode(rawPassword), 'PBKDF2', false, ['deriveBits']);
+      const bits = await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+        key, 256
+      );
+      const actualHash = new Uint8Array(bits);
+      if (actualHash.length !== expectedHash.length) return { valid: false };
+      for (let i = 0; i < actualHash.length; i++) {
+        if (actualHash[i] !== expectedHash[i]) return { valid: false };
+      }
+      return { valid: true };
+    } catch (_) {
+      return { valid: false };
+    }
+  }
+
+  // 旧版无盐 SHA-256 �?验证通过后自动迁�?
   try {
     const hex = (await sha256Hex(rawPassword)).toLowerCase();
-    return hex === String(hashed || '').toLowerCase();
+    const valid = hex === String(stored || '').toLowerCase();
+    if (valid) {
+      const newHash = await pbkdf2Hash(rawPassword);
+      return { valid: true, newHash };
+    }
+    return { valid: false };
   } catch (_) {
-    return false;
+    return { valid: false };
   }
 }
 
 /**
- * 生成密码哈希
+ * 生成密码哈希（使�?PBKDF2-SHA256 带盐）�?
  * @param {string} password - 原始密码
- * @returns {Promise<string>} 哈希后的密码
+ * @returns {Promise<string>} 带格式的哈希字符�?
  */
 export async function hashPassword(password) {
-  return await sha256Hex(password);
+  return await pbkdf2Hash(password);
 }
 
 function base64UrlEncode(data) {
@@ -201,7 +270,7 @@ function base64UrlDecode(str) {
 /**
  * 带缓存的JWT验证函数
  * @param {string} JWT_TOKEN - JWT密钥
- * @param {string} cookieHeader - Cookie头
+ * @param {string} cookieHeader - Cookie�?
  * @returns {Promise<boolean|object>} 验证结果
  */
 export async function verifyJwtWithCache(JWT_TOKEN, cookieHeader) {
@@ -239,22 +308,16 @@ export async function verifyJwtWithCache(JWT_TOKEN, cookieHeader) {
  * 检查超级管理员权限覆盖
  * @param {Request} request - HTTP请求对象
  * @param {string} JWT_TOKEN - JWT密钥令牌
- * @returns {object|null} 超级管理员权限对象
+ * @returns {object|null} 超级管理员权限对�?
  */
 export function checkRootAdminOverride(request, JWT_TOKEN) {
   try {
     if (!JWT_TOKEN) return null;
     const auth = request.headers.get('Authorization') || request.headers.get('authorization') || '';
     const xToken = request.headers.get('X-Admin-Token') || request.headers.get('x-admin-token') || '';
-    let urlToken = '';
-    try {
-      const u = new URL(request.url);
-      urlToken = u.searchParams.get('admin_token') || '';
-    } catch (_) { }
     const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
     if (bearer && bearer === JWT_TOKEN) return { role: 'admin', username: '__root__', userId: 0 };
     if (xToken && xToken === JWT_TOKEN) return { role: 'admin', username: '__root__', userId: 0 };
-    if (urlToken && urlToken === JWT_TOKEN) return { role: 'admin', username: '__root__', userId: 0 };
     return null;
   } catch (_) {
     return null;
@@ -262,7 +325,7 @@ export function checkRootAdminOverride(request, JWT_TOKEN) {
 }
 
 /**
- * 解析请求的认证负载信息
+ * 解析请求的认证负载信�?
  * @param {Request} request - HTTP请求对象
  * @param {string} JWT_TOKEN - JWT密钥令牌
  * @returns {Promise<object|false>} 认证负载对象
@@ -270,12 +333,12 @@ export function checkRootAdminOverride(request, JWT_TOKEN) {
 export async function resolveAuthPayload(request, JWT_TOKEN) {
   const root = checkRootAdminOverride(request, JWT_TOKEN);
   if (root) return root;
-  return await verifyJwtWithCache(JWT_TOKEN, request.headers.get('Cookie') || '');
+  return await verifyJwtWithCache(JWT_TOKEN, request?.headers?.get('Cookie') || '');
 }
 
 /**
- * 认证中间件
- * @param {object} context - 请求上下文
+ * 认证中间�?
+ * @param {object} context - 请求上下�?
  * @returns {Promise<Response|null>} 认证失败返回401响应
  */
 export async function authMiddleware(context) {
@@ -293,7 +356,6 @@ export async function authMiddleware(context) {
     context.authPayload = root;
     return null;
   }
-
   const payload = await verifyJwtWithCache(JWT_TOKEN, request.headers.get('Cookie') || '');
   if (!payload) {
     return new Response('Unauthorized', { status: 401 });

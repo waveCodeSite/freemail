@@ -43,7 +43,7 @@ export async function handleApiRequest(request, db, mailDomains, options = {
     const mailboxId = payload?.mailboxId;
     
     // 允许的API端点
-    const allowedPaths = ['/api/emails', '/api/email/', '/api/auth', '/api/quota', '/api/mailbox/password'];
+    const allowedPaths = ['/api/emails', '/api/email/', '/api/auth', '/api/quota', '/api/mailbox/info', '/api/mailbox/password'];
     const isAllowedPath = allowedPaths.some(allowedPath => path.startsWith(allowedPath));
     
     if (!isAllowedPath) {
@@ -107,3 +107,4 @@ export { handleUsersApi } from './users.js';
 export { handleMailboxesApi } from './mailboxes.js';
 export { handleEmailsApi } from './emails.js';
 export { handleSendApi } from './send.js';
+export { handleShareApi } from './share.js';

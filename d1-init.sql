@@ -48,11 +48,7 @@ CREATE TABLE IF NOT EXISTS messages (
   FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_mailbox_id           ON messages(mailbox_id);
-CREATE INDEX IF NOT EXISTS idx_messages_received_at          ON messages(received_at DESC);
-CREATE INDEX IF NOT EXISTS idx_messages_r2_object_key        ON messages(r2_object_key);
 CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received     ON messages(mailbox_id, received_at DESC);
-CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received_read ON messages(mailbox_id, received_at DESC, is_read);
 
 -- ────────────────────────────────────────
 -- 用户表
@@ -83,6 +79,7 @@ CREATE TABLE IF NOT EXISTS user_mailboxes (
   FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE
 );
 
+-- 优化查询性能的复合索引
 CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user       ON user_mailboxes(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_mailboxes_mailbox    ON user_mailboxes(mailbox_id);
 CREATE INDEX IF NOT EXISTS idx_user_mailboxes_user_pinned ON user_mailboxes(user_id, is_pinned DESC);
@@ -103,7 +100,8 @@ CREATE TABLE IF NOT EXISTS sent_emails (
   status        TEXT    DEFAULT 'queued',
   scheduled_at  TEXT,
   created_at    TEXT    DEFAULT CURRENT_TIMESTAMP,
-  updated_at    TEXT    DEFAULT CURRENT_TIMESTAMP
+  updated_at    TEXT    DEFAULT CURRENT_TIMESTAMP,
+  provider      TEXT    NOT NULL DEFAULT 'resend'
 );
 
 CREATE INDEX IF NOT EXISTS idx_sent_emails_resend_id      ON sent_emails(resend_id);
